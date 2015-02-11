@@ -1,0 +1,205 @@
+#!/usr/bin/perl
+use Getopt::Std;
+# x option, x: option takes a value.
+use NetAddr::IP;
+use Net::Netmask;
+use Regexp::IPv6 qw($IPv6_re);
+
+&usage if !(getopts('a:c:de:f:hiqr:s:v'));
+
+# &usage if (($#ARGV < 0) || (($opt_c) && ($opt_c eq "")) || $opt_h));
+&usage if ((($opt_c) && ($opt_c eq "")) || $opt_h);
+
+if ($opt_r) {
+  $regex = $opt_r;
+} else {
+  $regex = "[a-zA-Z0-9]";
+}
+
+# Setting regex_opts is extraneous now, but at some point we will
+# start doing an eval on the regex and we can do things like
+# if $foo =~ /$regex/$regex_opts) {}  
+# this fails as perl, but can be evaluated nicely when we
+# implement complex matching.  For now set it, ignore it, and just
+# use opt_i to determine if we need case insensitive matching.
+
+if ($opt_i) {
+  $regex_opts = "i";
+} else {
+  undef $regex_opts;
+}
+
+if ($opt_s) {
+  $sos = $opt_s;
+} else {
+  $sos = "^interface";
+}
+
+if ($opt_e) {
+  $eos = $opt_e;
+} else {
+  $eos = "^!";
+}
+
+undef @stanza;
+undef $match;
+undef $inblock;
+
+
+# default to address family set to 4.
+my $af = 4;
+if (defined($opt_a)) {
+	if ($opt_a =~ /$IPv6_re/) {
+		$af=6;
+	}
+}
+
+
+while (<>) {
+  s/\r\n/\n/; # replace ^M from cisconf
+  if ((($opt_i) && ($_ =~ /$sos/i)) || ($_ =~ /$sos/)) {
+    # you can remain in a block if you find a second start
+    $inblock = "true";
+  }
+  if ($inblock) {
+    push @stanza,$_;
+    print "X $_" if ($opt_d);
+    if (!(($opt_c)||($opt_a))) {
+      if ((($opt_i) && ($_ =~ /$regex/i)) || ($_ =~ /$regex/)) {
+        $match = "true";
+      }
+    }
+    # you cannot exit a block unless you previously entered one
+    # so the end of stanza checks are in the scope of being in a
+    # block/stanza.
+
+    if ((($opt_i) && ($_ =~ /$eos/i)) || ($_ =~ /$eos/)) {
+      &complex_match if ($opt_c);
+      &address_match if ($opt_a);
+      if (($match) xor ($opt_v)) {
+        print "Found stanza in $ARGV ";
+        print "size:" . scalar(@stanza) . "\n";
+        print @stanza if (!($opt_q));
+      } 
+      undef $match;
+      undef $inblock;
+      undef @stanza;
+    }
+  }
+  else { # forget stanza, match a line, like a static route
+		push @stanza,$_;
+		if ($opt_a) { &address_match; }
+        if (($match) xor ($opt_v)) {
+			print "Found a LINE in $ARGV :\n";
+			print @stanza if (!($opt_q));
+		}
+        undef $match;
+        undef @stanza;
+  }
+}
+
+sub complex_match {
+  undef $match;
+  #complex match
+  print "complex matching\n" if ($opt_d);
+  foreach $line (@stanza) {
+    if ((($opt_i) && ($line =~ /$regex/i)) || ($line =~ /$regex/)) {
+      $match = "true";
+    }
+  }
+}
+
+sub address_match {
+  undef $match;
+  foreach $line (@stanza) {
+    my $iptomatch = $opt_a;
+	if ($af eq 4) {
+		if ($line =~ m/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/) {
+			# if line contains addr/mask pair
+			my $addr = $1;
+			my $mask = $2;
+			my $iptomatch = $opt_a;
+			($o1,$o2,$o3,$o4) = split(/\./, $2);
+			if ($o1 < 128) {
+				# we found a revmask, invert it.
+				$o1 = ($o1 ^ 255);
+				$o2 = ($o2 ^ 255);
+				$o3 = ($o3 ^ 255);
+				$o4 = ($o4 ^ 255);
+				$mask = "$o1.$o2.$o3.$o4";
+			} else {
+				# print "not using reverse mask\n" if ($opt_d);
+			}
+			# then let's see if the ip we were given is in this range
+			my $block = new Net::Netmask($addr,$mask);
+			$base = $block->base();
+			if ($block->match($iptomatch)) {
+				$match = "true";
+			}
+			# end if line appears to be ip addr/netmask 
+		} elsif ($line =~ m/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/) {
+			# we did not find a addr/mask pair, and we found an addr, maybe
+			# it's a router ID or some such IP address.
+			if ($line =~ m/$iptomatch/) { $match="true"; }
+		}
+
+	# v6 match
+	} elsif ($af eq 6) {
+
+		my $iptomatch6 = NetAddr::IP->new6($iptomatch);
+
+		# v6 match with subnet mask
+		if ($line =~ /($IPv6_re\/\d+)/i) {
+			my $v6block = NetAddr::IP->new6($1);
+			if ($v6block->contains($iptomatch6)) {
+				$match = "true";
+			}
+
+		# v6 match without mask
+		} elsif ($line =~ /($IPv6_re)/i) {
+			if (NetAddr::IP->new6($1) eq $iptomatch6) {
+				$match = "true";
+			}
+		}
+	}
+  } # end foreach
+}  
+
+
+# x option, x: option takes a value.
+# (getopts('a:c:de:f:hiqr:s:v'));
+sub usage {
+  print "Usage: $0 [-s stanza-start] [-e stanza-end] [-r regex]\n";
+  print "          [-c complex-match] [-d] [-i] [-v] [files] [-h]\n";
+  print "  -a address match,  match network/mask pairs that contain\n";
+  print "     that IP address.\n";
+  print "     -a 10.2.0.1 it will match a config with\n";
+  print "    \"ip address 10.0.0.0 255.255.0.0\", and it will also match\n";
+  print "     an OSPF stanza with \"network 10.2.0.0 0.0.0.127\"\n";
+  print "  -c complex match is not implemented\n";
+  print "  -d prints debug info\n";
+  print "  -e \"regex\" defines the end of a stanza\n";
+  print "     The default end of stanza regex is !\n";
+  print "     WISCNIC records end in a blank line -e \"\^\$\"\n";
+# print "  -f ??\n";
+  print "  -h prints help info\n";
+  print "  -i makes the match case insensitive\n";
+  print "  -q defines quiet mode, just return success or failure.\n";
+  print "  -r \"regex\" defines a regex to look for within a stanza\n";
+  print "     The default regex to match within a stanza is [a-zA-Z0-9]\n";
+  print "  -s \"regex\" defines the start of a stanza\n";
+  print "     The default start of stanza regex is ^interface\n";
+  print "      person records begin with person: -s \"person:\"\n";
+  print "      aut-num records begin with aut-num: -s \"aut-num:\"\n";
+  print "      inetnum records begin with inetnum: -s \"inetnum:\"\n";
+  print "  -v invert match\n";
+  print "\n";
+  print "Config files live in:\n";
+  print "  ~net/cms/*.conf\n";
+  print "WISNIC files live in:\n";
+  print "  person:   /usr/local/net/db_backup/db.person\n";
+  print "  aut-num:  /usr/local/net/db_backup/db.aut-num\n";
+  print "  inetnum:  /usr/local/net/db_backup/db.inetnum\n";
+  exit;
+}
+

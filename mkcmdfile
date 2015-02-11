@@ -1,0 +1,258 @@
+#!/usr/bin/perl
+#
+# mkcmd - makes .cmd files to stage code for 3550s
+# 
+# when ran, this produces a series of file of the 
+# form machine-name_upgrade.cmd which are post
+# processed by make.
+#
+# models.txt is an option file of the form
+# ip-address      device-name        model
+# 146.151.149.124 c-432nm-b3a-1-core unknown
+# it lets you make command files for all of a specific model
+#
+# revision history
+# .01 
+#
+$binDir = "./";
+$clogin = "$binDir/clogin2";
+$modelsDir = "./";
+$modelsFile = "$modelsDir/models.txt";
+$outputDir = "./output/"; 
+
+use Getopt::Std;
+# : after var means var takes an option, eg: h is boolean i: takes an option
+# sets $opt_var as a side effect.  Eg: $opt_i = "imagename"
+
+getopts('c:def:hi:lm:o:p:t:w:');
+# c = optional command to print to CMDFILE
+# d = debug
+# e = exact match for target model
+# f = device-file
+# h = help
+# i = image-name
+# l = limit number of files created
+# m = model from $binDir/models.txt
+# o = output directory to place .cmd files in
+# p = parameters: -p "params"
+# t = target to run against
+# w = with these commands (ie: -w commandfile)
+
+if ($opt_h) {
+  &help;
+}
+
+if ($opt_d) {
+  print "DEBUG enabled\n";
+  $debug = "true";
+}
+
+if (!$opt_o) {
+# $outdir = "/some/output/directory/mass_upgrade/";
+  $outdir = "./";
+} else {
+  $outdir = $opt_o;
+}
+
+
+if ($opt_t) {
+  undef @devices; # empty the device list.
+  @targets = split(/,/,$opt_t);
+  push @devices, @targets; # add target to device list.
+} elsif ($opt_f) {
+  # -f device-file containing a list of targets
+  undef @devices; # empty the device list.
+  dprint("device-file: $opt_f\n");
+  open(DEVICES,"<$opt_f");
+  while (<DEVICES>) {
+    chomp($_);
+    push @devices,$_; # add each device in device-file to device list.
+  }
+} else {
+  if (!($opt_m)) { 
+    print "ERROR: missing option.\n";
+    print "Must define one of:\n";
+    print "   -t (target to upgrade)\n";
+    print "   -f (file with a list of targets)\n";
+    print "   -m (model), a model to check in $modelsFile\n"; 
+    &help;
+  }
+  # run against models.txt
+  # IP addr      device-name         device-type
+  # 144.92.68.26 t-ws2102-121-1-mgmt cisco2511
+  undef @devices; # empty the device list.
+  open(MODELS,"<$modelsFile");
+  while (<MODELS>) {
+    ($addr,$device,$model) = split(/ /,$_);
+    if ($opt_e) {
+      if ($model eq $opt_m) {
+        push @devices,$device; # add exact matches to device list.
+      }
+    } else {
+      if ($model =~ /$opt_m/) {
+        push @devices,$device; # add matches to device list.
+      }
+    }
+  } # end while models.txt
+} # end of choose one of -t target | -f file-with-devices | -m model [-e]
+
+dprint("Devices:\n@devices\n");
+if ($opt_i) {
+  $image = $opt_i;
+  if ($image =~ /\/var\/local\/tftp\/(.*)/) {
+    # strip leading /var/local/tftp/ from image name.
+    $image = $1;
+  }
+  if (!(-e "/var/local/tftp/$image")) {
+    print "Image: $image does not exist.\n\n";
+    &help;
+  } elsif (!(-r "/var/local/tftp/$image")) {
+    print "Image: $image not readable.\n\n";
+    &help;
+  } else {
+    dprint("Image: $image exists and is readable.\n");
+    # really need to stat the file to ensure it's readable
+    # by the tftp server, not just this process.
+  }
+} else {
+  if (!($opt_c) && !($opt_w)) {
+    # specifying an image is optional is -c or -w is given
+    print "You must specify -i image\n";
+    print "either absolute:\n";
+    print "  /var/local/tftp/cisco/myimage.bin\n";
+    print "or relative to /var/local/tftp:\n";
+    print "  cisco/myimage.bin\n\n";
+    &help;
+  }
+}
+
+# default tftp server
+$server = "tftp.example.net";
+
+if ($opt_s) {
+  # -s server to specify new tftp server.
+  $server = $opt_s;
+}
+
+
+# finally finished with option processing.
+$start = time;
+
+$numdev = $#devices + 1;
+# dprint is a function which only prints if $debug exists.
+dprint("Found $numdev target devices.\n");
+if ($opt_l) {print "Found $numdev target devices.\n"; }
+
+# limit number of files to create if -l
+$limit = 4;
+$limit_loop = 0;
+
+if ($opt_c) {
+  $command = $opt_c;
+} elsif ($opt_w) {
+  if (!(-e "$opt_w")) {
+    print "Image: $opt_w does not exist.\n\n";
+    &help;
+  } elsif (!(-r "$opt_w")) {
+    print "Image: $opt_w not readable.\n\n";
+    &help;
+  } else {
+    dprint("Image: $opt_w exists and is readable.\n");
+    # really need to stat the file to ensure it's readable
+    # by the tftp server, not just this process.
+  }
+} else {
+  if ($opt_p) {
+    $command = "archive download-sw $opt_p tftp://$server/$image";
+  } else {
+    $command = "archive download-sw tftp://$server/$image";
+  }
+}
+
+foreach $device (@devices) {
+  # don't run it on more than four devices while using -l.
+  $limit_loop++;
+  if (($opt_l) && ($limit_loop > $limit)) {
+    exit;
+  }
+  
+  open(CMDFILE,"> $outdir/$device.cmd") ||
+    die "Cannot open $outdir/$device.cmd for output.\n";
+  if ($opt_w) {
+    open(CMDLIST,"< $opt_w") ||
+    die "Cannot open $opt_w for input.\n";
+    while (<CMDLIST>) {
+      print CMDFILE;
+    }
+  } else {
+    print CMDFILE "$command\n";
+  }
+  close CMDFILE;
+  dprint("DEBUG: $device $command :\n");
+} # end foreach device in device list
+
+$fin = time;
+$total = $fin - $start;
+dprint("Exiting after $total seconds.\n");
+exit;
+
+sub dprint() {
+  if ($debug) {
+    print "@_";
+  }
+}
+
+sub help() {
+
+# getopts('c:def:hi:lm:o:t:w:');
+# c = optional command to print to CMDFILE
+# d = debug
+# e = exact match for target model
+# f = device-file
+# h = help
+# i = image-name
+# l = limit number of files created
+# m = model from /home/net/cms/models.txt
+# o = output directory to place .cmd files in
+# t = target to run against
+# w = with these commands (ie: -w commandfile)
+
+  print "Usage:\n";
+  print "  $0 [-d] [-h] {[-f <targetfile>] | [-t <target>] | \n";
+  print "     [-m model [-e]] } [-s <server>] <-i image | \n";
+  print "       -c \"command list\" | -w with-command-file.txt>\n";
+  print "    -d enables debugging output.\n";
+  print "    -h gives this help and exits.\n";
+  print "    -f <targetfile> runs against a series of targets\n";
+  print "       one per line in file.\n";
+  print "     Eg:\n";
+  print "       s-computerscience-b100-1\n";
+  print "       s-computerscience-b100-2\n";
+  print "\n";
+  print "    -t <target> runs against a single target.\n";
+  print "    -m <model> runs against anything in $modelsDir" . "$modelsFile\n";
+  print "       containing model.\n";
+  print "    -e used with -m <model> to specify the *exact* model number.\n";
+  print "    -m 3550 will upgrade catalyst355012G, catalyst355024, etc.\n";
+  print "    -m catalyst355024 -e will only upgrade machines in models.txt\n";
+  print "       exactly matching model catalyst355024.\n";
+  print "    -o output directory specifies where to place the .cmd files.\n";
+  print "       the default is $outputDir\n";
+  print "\n";
+  print "    -s <server>  tftp server defaults to tftp.example.com\n";
+  print "    -i <image> expects image relative to /var/local/tftp/\n";
+  print "    eg: -i cisco/c3550-i9k2l2q3-tar.121-20.EA1.tar\n";
+  print "       but will attempt to fix filenames beginning with\n";
+  print "       /var/local/tftp by stripping it, if present.\n";
+  print "\n";
+  print "    -c \"command1; command2; command3\"\n";
+  print "    -w command-file\n";
+  print "       a command-file contains commands, one per line, eg:\n";
+  print "           conf t\n";
+  print "           vlan 391\n";
+  print "             name my_vlan\n";
+  print "             exit\n";
+  print "             wr mem\n";
+  print "\n";
+  exit;
+}

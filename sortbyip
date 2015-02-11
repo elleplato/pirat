@@ -1,0 +1,37 @@
+#! /usr/bin/perl -anw
+
+# -a is autosplit mode
+# -n is 'assume a loop on each line of the input'
+# -w issue warnings where appropriate
+
+use Regexp::Common qw(net);  # for finding IPv4 addresses
+use Socket;
+
+#===== Process each field of each line looking for IP addresses
+#      @F is a built-in array of fields that results from using
+#      the -a autosplit function
+foreach my $f (@F) 
+{
+  #===== Check if this field is an IP address
+  if ($f =~ m/^$RE{net}{IPv4}$/) 
+  {
+    #====== Add a hash to the array that contains the 
+    #       unpacked network address and the line itself
+    push(@hr_array, { n => unpack("N", inet_aton($f)), line => $_ });
+   
+    #==== Since we found the IP, skip the rest of the fields in this line
+    last; 
+   } # if we found an IP address
+} # for each line
+
+#===== Now print each line sorted by the network address of
+#      the IP found in that line
+#      The "END" block ensures this is done only once when the script
+#      has finished looping through the input file
+END
+{
+  foreach (sort { $a->{n} <=> $b->{n} } @hr_array) 
+  {
+    print $_->{line};
+  }
+} # end of END block
