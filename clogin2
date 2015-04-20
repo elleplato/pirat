@@ -15,21 +15,13 @@
 ## anything else.
 ##
 ## Small tweaks where added by E. Janet Plato of the University of
-## Wisconsin, Madison.   Those changes are released under the above 
+## Wisconsin, Madison.   Those changes are released under the above
 ## license.  Those tweaks are to alter the timeouts on long waits for
 ## devices producing intermediate output such as ... or !!!, and to
 ## allow passwords to be passed in via the environment.  Note that
 ## when passing user and passwd in via the environment, the script
 ## still expects to find a value in the cloginrc file.  I should fix that.
 ##
-## The following environment variables are parsed:
-##
-## CISCO_USER - if present in the environment, overrides the unix user name
-## CLOGIN_USR - the login user name
-## CLOGIN_UPW - the user level password
-## CLOGIN_VPW - the vty password (for many devices this is the same as UPW)
-## CLOGIN_EPW - the enable password
-## 
 #
 # clogin - Cisco login
 #
@@ -41,13 +33,15 @@
 # The default username password is the same as the vty password.
 #
 
-# insert this line to start internal debugger
+# debug 1 starts internal debugger, broke in 5.43, sigh. plato
+# 5.45.0 is in ~/bin/expect or /usr/local/ns/bin: cd ~/bin;
+#  ./expect ./clogin2 options
 # debug 1
+# exp_internal 1 starts internal debugger, shows what you got on every expect
 # exp_internal 1
 
 #--- packages
-# disable syslog by default, it fails if you don't have log rotation
-# package require syslog
+package require syslog
 
 # Usage line
 set usage "Usage: $argv0 \[-autoenable\] \[-noenable\] \[-c command\] \
@@ -93,52 +87,21 @@ if {[ info exists env(CISCO_USER) ] } {
     regexp {\(([^)]*)} "$reason" junk default_user
 }
 
-#--- default logging disabled
-# open a log file, and log the user and options
-# set log_file /var/local/log/clogin2.log
-# if [ catch {set log_fd [open $log_file a+]} reason ] {
-#    send_user "\nError unable to open log file $log_file: $reason\n"
-#    exit 1
-# }
+set log_entry "\[$default_user\] invoked clogin"
 
-#--- default syslog disabled
-# set log_entry [clock format [clock seconds] -format {%b %d %H:%M}]
-# append log_entry " clogin2: User $default_user ran clogin2"
+if { $::argc > 0 } {
+  set options $::argv
+  foreach arg $::argv {
+    append log_entry [format " %s" $arg]
+  }
+}
 
-# if { $::argc > 0 } {
-#   set options $::argv
-#   foreach arg $::argv {
-#     append log_entry " $arg"
-#   }
-# }
-
-# if [ catch { puts $log_fd $log_entry } reason ] {
-#    send_user "\nError unable to write to log file $log_file: $reason\n"
-#    send_user "log_entry: $log_entry\n"
-#    exit 1
-# }
-
+if {[catch {syslog -ident clogin -facility daemon info "$log_entry"}]} {
+    exit 1
+}
 
 # Sometimes routers take awhile to answer (the default is 10 sec)
 set timeout 45
-
-# look for username/passwords in the environment, and surpress reading them from cloginrc if found
-
-if {[ info exists env(CLOGIN_USR) ] } {
-    set username $env(CLOGIN_USR)
-}
-if {[ info exists env(CLOGIN_UPW) ] } {
-    set userpasswd $env(CLOGIN_UPW)
-    set do_passwd 0
-}
-if {[ info exists env(CLOGIN_VPW) ] } {
-    set passwd $env(CLOGIN_VPW)
-    set do_passwd 0
-}
-if {[ info exists env(CLOGIN_EPW) ] } {
-    set enapasswd $env(CLOGIN_EPW)
-    set do_enapasswd 0
-}
 
 # Process the command line
 for {set i 0} {$i < $argc} {incr i} {
@@ -428,7 +391,7 @@ proc login { router user userpswd passwd enapasswd cmethod cyphertype } {
         # TACACS server is not working, then it will use the enable
         # passwd.  Or, the router might not have TACACS turned on,
         # then it will just send the passwd.
-        # if telnet fails with connection refused, try ssh
+        # if ssh connection is refused, try telnet
 
         expect {
             -re "(Connection refused|Secure connection \[^\n\r]+ refused|Connection closed by)" {
@@ -544,7 +507,7 @@ proc do_enable { enauser enapasswd } {
 }
 
 # Run commands given on the command line.
-proc run_commands { prompt command } {
+proc run_commands { prompt command router } {
     global in_proc platform
     set in_proc 1
 
@@ -560,8 +523,16 @@ proc run_commands { prompt command } {
             send "\r"
         } elseif [ regexp -- "^fa-.*" "$prompt" ] {
             send "term pager 0\r"
+        } elseif [ regexp -- "^fm-.*" "$prompt" ] {
+            send "term pager 0\r"
         } elseif [ regexp -- ".* Main\#" "$prompt" ] {
             send "\r"
+        } elseif [ regexp -- "^rx-.*" "$router" ] {
+            send "term length 0\r"
+            send "term width 0\r"
+        } elseif [ regexp -- "^sn-.*" "$prompt"] {
+            send "term length 0\r"
+            send "term width 180\r"
         } else {
             send "term length 0\r"
         }
@@ -587,7 +558,10 @@ proc run_commands { prompt command } {
         }
         expect {
             -re $reprompt	{}
-            -re "\[\n\r]+"	{ exp_continue }
+            -re "\[\n\r]+"	{
+                send_user -- "$expect_out(buffer)"
+                exp_continue
+            }
         }
     } else {
         regsub -all "\[)(]" $prompt {\\&} reprompt
@@ -595,132 +569,103 @@ proc run_commands { prompt command } {
     # this is the only way i see to get rid of more prompts in o/p..grrrrr
     log_user 0
 
-    # Is this a multi-command?
-    if [ string match "*\;*" "$command" ] {
-        set commands [split $command \;]
-        set num_commands [llength $commands]
-        # the pager can not be turned off on the PIX, so we have to look
-        # for the "More" prompt.  the extreme is equally obnoxious, with a
-        # global switch in the config.
-        for {set i 0} {$i < $num_commands} { incr i} {
-            send "[subst -nocommands [lindex $commands $i]]\r"
-            expect {
-                -re "\!\!"			{ exp_continue }
-                -re "\#\#"			{ exp_continue }
-                # added 6/1/04 to catch !!! or ### coming back from command.
-                # which was causing clogin to time out.
-                # for some reason I added send "y\n" which seems wrong
-                # so on 9/12/04 I changed it to "y\r" and removed -re
-                # since confirm is not a regex
-                "confirm\]"     {
-                    send "\r"
-                    send_user -- "$expect_out(buffer)"
-                    exp_continue
-                }
-                # added 6/1/04 to catch [confirm] in various commands.
-                # Note the highly unintuitive send_user is required,
-                # I think it flushes the buffer.  Otherwise the
-                # process sends y\r over and over and over
+    # Split command into a list, even if the size of that list is one.
+    set commands [split $command \;]
+    set num_commands [llength $commands]
 
-                # added 2009/10/28 plonka:
-		# Cisco devices ask confirm-like questions, such as:
-		#   Delete filename [foo.cfg]?
-	 	# i.e., with a default value specified in square brackets.
-                -re " filename \[..*?\]?"     {
-                    send "\r"
-                    send_user -- "$expect_out(buffer)"
-                    exp_continue
-                }
-
-                -re "\b+"   { exp_continue }
-                -re "^\[^\n\r *]*$reprompt"	{
-                    send_user -- "$expect_out(buffer)"
-                }
-                -re "^\[^\n\r]*$reprompt."	{
-                    send_user -- "$expect_out(buffer)"
-                    exp_continue
-                }
-                -re "\[\n\r]+"   {
-                    send_user -- "$expect_out(buffer)"
-                    exp_continue
-                }
-                -re "\[^\r\n]*Press <SPACE> to cont\[^\r\n]*"	{
-                    send " "
-                    # bloody ^[[2K after " "
-                    expect {
-                        -re "^\[^\r\n]*\r" {}
-                    }
-                    exp_continue
-                }
-                -re "^ --More--\[^\n\r]*"	{
-                    send " "
-                    exp_continue
-                }
-                # fortinets do not put a space before --More-- ejp 10/15/2008
-                -re "^--More-- \[^\n\r]*"	{
-                    send " "
-                    exp_continue
-                }
-                -re "^<-+ More -+>\[^\n\r]*"	{
-                    send_user -- "$expect_out(buffer)"
-                    send " "
-                    exp_continue
-                }
-            }
-        }
-    } else {
-        # the pager can not be turned off on the PIX, so we have to look
-        # for the "More" prompt.  the extreme is equally obnoxious, with a
-        # global switch in the config.
-        send "[subst -nocommands $command]\r"
+    # Many devices cannot turn off the pager in their show output.
+    # So for each device, we have to look for its unique "More" prompt.
+    # PIX: pager cannot be turned off, look for:
+    # Extreme: same, but also has global switch in the config.
+    for {set i 0} {$i < $num_commands} { incr i} {
+        send "[subst -nocommands [lindex $commands $i]]\r"
         expect {
-            -re "\!\!"   { exp_continue }
-            -re "\#\#"	  { exp_continue }
-            # added 6/1/04 to catch !!! or ### coming back from command.
-            # which was causing clogin to time out.
-            # changed "y\n" to "y\r" on 9/14/04
-            # "\[confirm\]" was always sending y
-            "confirm\]" { send "y\r" }
-            # added 6/1/04 to catch [confirm] in various commands.
-            -re "\b+"			{ exp_continue }
-            -re "^\[^\n\r *]*$reprompt"	{ send_user -- "$expect_out(buffer)"
+            # added 6/1/04 to catch !!! or ### from download/upgrade commands
+            -re "\!\!" {
+                send_user -- "$expect_out(buffer)"
+                exp_continue
             }
-            -re "^\[^\n\r]*$reprompt."	{ send_user -- "$expect_out(buffer)"
-                exp_continue }
-            -re "\[\n\r]+"   { send_user -- "$expect_out(buffer)"
-                exp_continue }
-            -re "\[^\r\n]*Press <SPACE> to cont\[^\r\n]*"	{
+            -re "\#\#" {
+                send_user -- "$expect_out(buffer)"
+                exp_continue
+            }
+            # added 6/1/04 to catch [confirm] in various commands.
+            # Note the highly unintuitive send_user is required,
+            # I think it flushes the buffer.  Otherwise the
+            # process sends y\r over and over and over
+            # for some reason I added send "y\n" which seems wrong
+            # so on 9/12/04 I changed it to "y\r" and removed -re
+            # since confirm is not a regex.
+            # Prior to 2015 Mar 23 single cmd path had no send_user/exp_cont
+            "confirm\]" {
+                send "y\r"
+                send_user -- "$expect_out(buffer)"
+                exp_continue
+            }
+            # added 2009/10/28 plonka:
+            # Cisco devices ask confirm-like questions, such as:
+            #   Delete filename [foo.cfg]?
+            # i.e., with a default value specified in square brackets.
+            # pre 2015/03/23 this was only in the multiple command path
+            -re " filename \[..*?\]?" {
+                send "\r"
+                send_user -- "$expect_out(buffer)"
+                exp_continue
+            }
+            -re "\b+" { exp_continue }
+            # 2015/03/23 added exp_continue from single cmd path below
+            # which caused it to wait forever on the prompt after cmd 1
+            -re "^\[^\n\r *]*$reprompt" {
+                send_user -- "$expect_out(buffer)"
+            }
+            -re "^\[^\n\r]*$reprompt." {
+                send_user -- "$expect_out(buffer)"
+                exp_continue
+            }
+            -re "\[\n\r]+" {
+                send_user -- "$expect_out(buffer)"
+                exp_continue
+            }
+            -re "\[^\r\n]*Press <SPACE> to cont\[^\r\n]*" {
                 send " "
                 # bloody ^[[2K after " "
                 expect {
-                   -re "^\[^\r\n]*\r" {}
+                    -re "^\[^\r\n]*\r" {}
                 }
-            exp_continue
+                exp_continue
             }
-            -re "^ --More--\[^\n\r]*"	{
+            -re "^ --More--\[^\n\r]*" {
                 send " "
-                exp_continue }
-            -re "^<-+ More -+>\[^\n\r]*"	{
+                exp_continue
+            }
+            # fortinets do not put a space before --More-- ejp 10/15/2008
+            -re "^--More-- \[^\n\r]*" {
+                send " "
+                exp_continue
+            }
+            -re "^<-+ More -+>\[^\n\r]*" {
                 send_user -- "$expect_out(buffer)"
                 send " "
-                exp_continue }
+                exp_continue
             }
         }
-        log_user 1
+    }
+    log_user 1
 
-        if { [ string compare "extreme" "$platform" ] } {
-            send "exit\r"
-        } else {
-            send "quit\r"
-        }
-        expect {
-            "Do you wish to save your configuration changes" {
+    if { [ string compare "extreme" "$platform" ] } {
+        send "exit\r"
+    } else {
+        send "quit\r"
+    }
+
+    expect {
+        "Do you wish to save your configuration changes" {
             send "n\r"
             exp_continue
         }
-        "\n"					{ exp_continue }
-        timeout					{ return 0 }
-        eof					{ return 0 }
+        "\n" { exp_continue }
+        timeout { return 0 }
+        eof { return 0 }
     }
     set in_proc 0
 }
@@ -734,22 +679,18 @@ foreach router [lrange $argv $i end] {
     set router [string tolower $router]
     send_user "$router\n"
 
-    # nexus switches automatically enable.
-    if { [string match sn-* $router]} {
-      set autoenable 1;
-      set enable 0;
-    }
+    # adding string match for router type is better handled in .cloginrc
+    # add autoenable rx-* 1
+    # it can be added here with:
+    # if { [string match sn-* $router]} {
+    #       set sshver "-1";
+    #       set autoenable 1;
+    #       set enable 0;
+    # }
 
     # fortinet firewalls automatically enable.
     if { [string match ff-* $router]} {
       set autoenable 1;
-    }
-
-    # wireless devices automatically enable.
-    # I changed /etc/radius/clients to stop this - ejp 5/20/2007
-    if { [string match w-* $router]} {
-      # no longer needed, ejp 5/20/2007
-      # set autoenable 1;
     }
 
     if { [string match l-* $router]} {
@@ -758,19 +699,6 @@ foreach router [lrange $argv $i end] {
         set autoenable 1;
         set enable 0;
     }
-
-# they support v2 now, ejp 1/8/2008
-#   # match fwsm admin context
-#   if {[string match f-* $router]} {
-#     set sshver "-1";
-#   }
-
-# they support v2 now, ejp 1/8/2008
-#   # match fwsm firewall context
-#   if {[string match fx-* $router]} {
-#     set sshver "-1";
-#   } 
-
 
     # Figure out prompt.
     # Since autoenable is off by default, if we have it defined, it
@@ -868,9 +796,8 @@ foreach router [lrange $argv $i end] {
 
     # Figure out connection method
     set cmethod [find method $router]
-    # ejp - reversed order to prefer ssh over telnet as a default method
-    # if { "$cmethod" == "" } { set cmethod {{telnet} {ssh}} }
-    if { "$cmethod" == "" } { set cmethod {{ssh}} {{telnet}} }
+    # ejp - if { "$cmethod" == "" } { set cmethod {{telnet} {ssh}} }
+    if { "$cmethod" == "" } { set cmethod {{ssh} {telnet}} }
 
     # Login to the router
     if {[login $router $ruser $userpswd $passwd $enapasswd $cmethod $cyphertype]} {
@@ -905,7 +832,7 @@ foreach router [lrange $argv $i end] {
     }
 
     if { $do_command } {
-        if {[run_commands $prompt $command]} {
+        if {[run_commands $prompt $command $router]} {
             continue
         }
     } elseif { $do_script } {
@@ -914,8 +841,12 @@ foreach router [lrange $argv $i end] {
         if [ regexp -- ".*> .*enable" "$prompt" ] {
             send "set length 0\r"
             send "set logging session disable\r"
+        } elseif [ regexp -- "^rx-.*" "$router" ] {
+            send "term length 0\r"
+            send "term width 0\r"
         } else {
             send "term length 0\r"
+            send "term width 0\r"
         }
         expect -re $prompt	{}
         source $sfile
