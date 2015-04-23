@@ -1,8 +1,0 @@
-# clogin complains if there isn't a password (even if its unnecessary):
-add password * {userpw} {enapw}
-add user * rancid
-add method * {ssh}
-
-# note, the following seems to have no effect, use "-noenable" option instead:
-#add noenable *
-
