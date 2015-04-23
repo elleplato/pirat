@@ -317,6 +317,7 @@ proc login { router user userpswd passwd enapasswd cmethod cyphertype } {
     global prompt u_prompt p_prompt e_prompt
     set in_proc 1
     set uprompt_seen 0
+    set cleanSshKnownHosts /home/plato/src/clogin2/cleanSshKnownHosts.pl
 
     # try each of the connection methods in $cmethod until one is successful
     set progs [llength $cmethod]
@@ -340,12 +341,35 @@ proc login { router user userpswd passwd enapasswd cmethod cyphertype } {
             send_user "\nEntering interactive bash shell, use ~ to exit\n"
             interact "~" return
         } elseif ![string compare $prog "sshv1"] {
+            if { [ catch {exec $cleanSshKnownHosts $router} result ] } {
+                send_user "\nError: cleanSshKnowHosts failed: $result\n"
+            } else {
+                if { [string length $result] != 0} {
+                   set log_entry "cleanSshKnownHosts:: \[$result\]\n" 
+                   send_user $log_entry
+                   if {[catch {syslog -ident clogin -facility daemon info "$log_entry"}]} {
+                       exit 1
+                   }
+                }
+            }
+
             if [ catch {spawn /usr/bin/ssh -1 -x -c $cyphertype $user@$router} reason ] {
                 send_user "\nError: ssh failed: $reason\n"
                 exit 1
             }
         } elseif ![string compare $prog "ssh"] {
-            set mycommand [concat ssh -c $cyphertype $sshver -x $user@$router]
+            if { [ catch {exec $cleanSshKnownHosts $router} result ] } {
+                send_user "\nError: cleanSshKnowHosts failed: $result\n"
+            } else {
+                if { [string length $result] != 0} {
+                   set log_entry "cleanSshKnownHosts:: \[$result\]\n" 
+                   send_user $log_entry
+                   if {[catch {syslog -ident clogin -facility daemon info "$log_entry"}]} {
+                       exit 1
+                   }
+                }
+            }
+            set mycommand [concat /usr/bin/ssh -c $cyphertype $sshver -x $user@$router]
             if [ catch "spawn $mycommand" reason ] {
                 send_user "\nError: ssh failed: $reason\n"
                 exit 1
@@ -403,7 +427,7 @@ proc login { router user userpswd passwd enapasswd cmethod cyphertype } {
             eof {
                 send_user -- "$expect_out(buffer)"
                 send_user "\nError: EOF\n"
-                send_user "\nError: Couldn't login\n";
+                send_user "\nError: Couldn't login\n"
                 wait;
                 return 1
             }
@@ -519,6 +543,8 @@ proc run_commands { prompt command router } {
     if { [ string compare "extreme" "$platform" ] } {
         if [ regexp -- ".*> .*enable" "$prompt" ] {
             send "set length 0\r"
+        } elseif [ regexp -- "^\[(\]c-.*" "$prompt" ] {
+            send "\r"
         } elseif [ regexp -- "^f-.*" "$prompt" ] {
             send "\r"
         } elseif [ regexp -- "^fa-.*" "$prompt" ] {
@@ -658,12 +684,27 @@ proc run_commands { prompt command router } {
         send "quit\r"
     }
 
+    # some devices, eg aruba, disable on exit instead of a clean exit
+    # for these devices, we revert to the disable > prompt and then exit later
+    regsub "#" $prompt ">" prompt
+    regsub "#" $reprompt ">" reprompt
     expect {
+        -re "\[\n\r]+"      {
+            # send_user -- "$expect_out(buffer)"
+            exp_continue
+        }
+        "$prompt" {
+            send "exit\r"
+            exp_continue
+        }
+        -re "$reprompt" {
+            send "exit\r"
+            exp_continue
+        }
         "Do you wish to save your configuration changes" {
             send "n\r"
             exp_continue
         }
-        "\n" { exp_continue }
         timeout { return 0 }
         eof { return 0 }
     }
