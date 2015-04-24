@@ -7,7 +7,7 @@
 
 # cmd paths
 cat = /bin/cat
-clogin = /home/plato/Git/pirat/clogin2 -f ~plato/.cloginrc
+clogin = /usr/local/ns/bin/clogin2 -f ~/.cloginrc
 ls = /bin/ls
 sed = /bin/sed
 
