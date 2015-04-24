@@ -2,8 +2,8 @@
 
 #==================================================================
 # cleanSshKnownHosts.pl, a tool to remove and log changed ssh host keys
-# Elle Janet Plato, 2015-04-20 janet.plato@wisc.edu
-# Maintained by the NS Application/AANTS Team annts-admin@lists.wisc.edu
+# Elle Janet Plato, 2015-04-20
+# Maintained by the NS Application/AANTS Team
 #==================================================================
 
 #=== Use/Require

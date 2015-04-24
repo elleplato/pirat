@@ -7,8 +7,8 @@
 # processed by make.
 #
 # models.txt is an option file of the form
-# ip-address      device-name        model
-# 146.151.149.124 c-432nm-b3a-1-core unknown
+# ip-address      device-name            model
+# 10.10.10.10     c-bldg123-rm100-1-core unknown
 # it lets you make command files for all of a specific model
 #
 # revision history
@@ -79,7 +79,7 @@ if ($opt_t) {
   }
   # run against models.txt
   # IP addr      device-name         device-type
-  # 144.92.68.26 t-ws2102-121-1-mgmt cisco2511
+  # 192.168.1.1  t-bldg51-123-1-mgmt cisco2511
   undef @devices; # empty the device list.
   open(MODELS,"<$modelsFile");
   while (<MODELS>) {
