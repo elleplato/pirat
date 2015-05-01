@@ -446,6 +446,10 @@ proc login { router user userpswd passwd enapasswd cmethod cyphertype } {
             -re "(Host key not found |The authenticity of host .* be established).*\(yes\/no\)\?" {
                 send "yes\r"
                 send_user "\nHost $router added to the list of known hosts.\n"
+                set log_entry "Host \[$router\] added to the ssh known hosts.\n"
+                if {[catch {syslog -ident clogin -facility daemon info "$log_entry"}]} {
+                    exit 1
+                }
                 exp_continue
             }
             -re "HOST IDENTIFICATION HAS CHANGED.* \(yes\/no\)\?"   {
