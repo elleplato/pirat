@@ -2,7 +2,11 @@
 
 #==================================================================
 # cleanSshKnownHosts.pl, a tool to remove and log changed ssh host keys
+<<<<<<< HEAD
 # Elle Janet Plato, 2015-04-20 University of Wisconsin, Madison
+=======
+# Elle Janet Plato, 2015-04-20
+>>>>>>> 84a72b3ee080d286f2920bad7523abaea52db129
 # Maintained by the NS Application/AANTS Team
 #==================================================================
 
